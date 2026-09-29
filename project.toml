@@ -1,7 +1,0 @@
-[[build.env]]
-name = "GOOGLE_FUNCTION_TARGET"
-value = "edit_pdf"
-
-[[build.env]]
-name = "GOOGLE_FUNCTION_SIGNATURE_TYPE"
-value = "http"
