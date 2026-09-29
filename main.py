@@ -25,7 +25,7 @@ BASE_DIR = os.path.dirname(
 FONT_PATH = os.path.join(
     BASE_DIR,
     "fonts",
-    "NotoSansJP-Regular.ttf"
+    "NotoSansJP-VariableFont_wght.ttf"
 )
 
 
