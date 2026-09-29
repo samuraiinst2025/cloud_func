@@ -5,6 +5,8 @@ import fitz  # PyMuPDF
 import functions_framework
 from flask import Response
 
+@functions_framework.http
+def edit_pdf(request):
 
 FONT_SIZE = 12
 MARGIN_RIGHT = 20
