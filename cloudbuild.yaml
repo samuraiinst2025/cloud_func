@@ -2,7 +2,6 @@ options:
   logging: CLOUD_LOGGING_ONLY
 
 steps:
-  # 1. Buildpacksで関数コンテナをビルドしてArtifact RegistryへPush
   - name: 'gcr.io/k8s-skaffold/pack'
     entrypoint: 'pack'
     args:
@@ -13,10 +12,11 @@ steps:
       - '--network'
       - 'cloudbuild'
       - '--publish'
-    env:
+      - '--env'
       - 'GOOGLE_FUNCTION_TARGET=edit_pdf'
+      - '--env'
+      - 'GOOGLE_FUNCTION_SIGNATURE_TYPE=http'
 
-  # 2. Cloud Runへデプロイ
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
     entrypoint: 'gcloud'
     args:
