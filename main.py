@@ -14,16 +14,19 @@ from flask import Response, jsonify
 
 FONT_SIZE = 12
 
-# 見た目上のページ端からの余白（pt）
+# 表示上のページ端からの余白（pt）
 MARGIN_RIGHT = 20
 MARGIN_TOP = 20
+
+# 文字が長い場合に確保する最低左余白
+MIN_X = 20
 
 # この main.py が存在するディレクトリ
 BASE_DIR = os.path.dirname(
     os.path.abspath(__file__)
 )
 
-# GitHubリポジトリに同梱した日本語フォント
+# GitHubリポジトリに配置した日本語フォント
 FONT_PATH = os.path.join(
     BASE_DIR,
     "fonts",
@@ -37,10 +40,10 @@ FONT_PATH = os.path.join(
 
 def add_cors_headers(response):
     """
-    Power Apps / Copilot Studioなどからのアクセスを許可する。
+    Copilot StudioやPower Platformからの呼び出しを許可する。
 
-    PoC中は * で許可。
-    本番環境では必要なOriginだけに制限推奨。
+    検証中はAccess-Control-Allow-Originを「*」にしている。
+    本番環境では必要なオリジンに制限することを推奨。
     """
 
     response.headers[
@@ -54,8 +57,10 @@ def add_cors_headers(response):
     response.headers[
         "Access-Control-Allow-Headers"
     ] = (
-        "Content-Type, Authorization, "
-        "Accept, Origin"
+        "Content-Type, "
+        "Authorization, "
+        "Accept, "
+        "Origin"
     )
 
     response.headers[
@@ -66,13 +71,14 @@ def add_cors_headers(response):
 
 
 # ============================================================
-# 共通レスポンス
+# JSONレスポンス
 # ============================================================
 
-def json_response(
-    payload,
-    status=200
-):
+def json_response(payload, status=200):
+    """
+    JSONレスポンスを返す。
+    """
+
     response = jsonify(
         payload
     )
@@ -84,12 +90,14 @@ def json_response(
     )
 
 
-def error_response(
-    message,
-    status
-):
+def error_response(message, status=400):
+    """
+    エラー内容をJSON形式で返す。
+    """
+
     return json_response(
         {
+            "success": False,
             "error": message
         },
         status
@@ -102,31 +110,34 @@ def error_response(
 
 def normalize_base64(value):
     """
-    通常のBase64とData URL形式の両方を受け付ける。
+    Base64文字列を正規化する。
 
-    通常:
-        JVBERi0xLjQK...
+    次の形式に対応する。
 
-    Data URL:
-        data:application/pdf;base64,JVBERi0xLjQK...
+    1. 通常のBase64
+       JVBERi0xLjQK...
+
+    2. Data URL
+       data:application/pdf;base64,JVBERi0xLjQK...
     """
 
     if not isinstance(value, str):
         raise ValueError(
-            "fileContent は文字列で指定してください。"
+            "fileContentは文字列で指定してください。"
         )
 
     value = value.strip()
 
     if not value:
         raise ValueError(
-            "fileContent が空です。"
+            "fileContentが空です。"
         )
 
-    if value.startswith("data:"):
+    # Data URLの場合、カンマより後ろだけを使用する
+    if value.lower().startswith("data:"):
         if "," not in value:
             raise ValueError(
-                "fileContent のData URL形式が正しくありません。"
+                "fileContentのData URL形式が正しくありません。"
             )
 
         value = value.split(
@@ -134,7 +145,7 @@ def normalize_base64(value):
             1
         )[1]
 
-    # 改行や空白を除去
+    # Base64内に含まれる改行、空白、タブを除去する
     return "".join(
         value.split()
     )
@@ -142,7 +153,7 @@ def normalize_base64(value):
 
 def decode_pdf_base64(value):
     """
-    Base64文字列をPDFバイト列へ変換する。
+    Base64文字列をPDFのバイト列へ変換する。
     """
 
     normalized_value = normalize_base64(
@@ -154,12 +165,13 @@ def decode_pdf_base64(value):
             normalized_value,
             validate=True
         )
+
     except (
         binascii.Error,
         ValueError
     ) as error:
         raise ValueError(
-            "fileContent をBase64として"
+            "fileContentをBase64として"
             "デコードできませんでした。"
         ) from error
 
@@ -168,15 +180,169 @@ def decode_pdf_base64(value):
             "デコード後のPDFデータが空です。"
         )
 
-    # PDFの一般的なシグネチャを確認
+    # 一般的なPDFシグネチャ
     if not pdf_bytes.startswith(
         b"%PDF-"
     ):
         raise ValueError(
-            "fileContent はPDFデータではありません。"
+            "fileContentはPDFデータではありません。"
         )
 
     return pdf_bytes
+
+
+def encode_pdf_base64(pdf_bytes):
+    """
+    PDFのバイト列をBase64文字列へ変換する。
+    """
+
+    return base64.b64encode(
+        pdf_bytes
+    ).decode(
+        "ascii"
+    )
+
+
+# ============================================================
+# ファイル名処理
+# ============================================================
+
+def sanitize_pdf_filename(file_name):
+    """
+    入力ファイル名を安全なPDFファイル名に整形する。
+    """
+
+    if not isinstance(file_name, str):
+        return "input.pdf"
+
+    file_name = os.path.basename(
+        file_name.strip()
+    )
+
+    if not file_name:
+        return "input.pdf"
+
+    if not file_name.lower().endswith(
+        ".pdf"
+    ):
+        file_name = (
+            file_name
+            + ".pdf"
+        )
+
+    return file_name
+
+
+def create_output_filename(input_file_name):
+    """
+    編集済みPDFのファイル名を生成する。
+    """
+
+    input_file_name = sanitize_pdf_filename(
+        input_file_name
+    )
+
+    base_name, _ = os.path.splitext(
+        input_file_name
+    )
+
+    return f"edited_{base_name}.pdf"
+
+
+# ============================================================
+# PDF検証
+# ============================================================
+
+def validate_pdf_file(pdf_path):
+    """
+    PDFとして開けるか、ページが存在するか確認する。
+    """
+
+    document = None
+
+    try:
+        document = fitz.open(
+            pdf_path
+        )
+
+        if document.page_count == 0:
+            raise ValueError(
+                "PDFにページがありません。"
+            )
+
+        # 破損PDFなどを検出するために1ページ目を読み込む
+        document.load_page(
+            0
+        )
+
+    except ValueError:
+        raise
+
+    except Exception as error:
+        raise ValueError(
+            "アップロードされたファイルを"
+            "PDFとして読み込めませんでした。"
+        ) from error
+
+    finally:
+        if document is not None:
+            document.close()
+
+
+# ============================================================
+# 文字描画位置計算
+# ============================================================
+
+def calculate_text_position(
+    page,
+    text_width,
+    font_size,
+    margin_right,
+    margin_top
+):
+    """
+    表示上の右上に文字を追加するための座標を計算する。
+
+    page.rectはページの回転を反映した表示上のサイズとなる。
+    """
+
+    page_width = float(
+        page.rect.width
+    )
+
+    page_height = float(
+        page.rect.height
+    )
+
+    # 表示上の右端から文字幅と余白を引く
+    visual_x = (
+        page_width
+        - margin_right
+        - text_width
+    )
+
+    # 文字列が長い場合でも完全にページ外へ出ないようにする
+    visual_x = max(
+        MIN_X,
+        visual_x
+    )
+
+    # insert_textのY座標は文字の上端ではなくベースライン
+    visual_y = (
+        margin_top
+        + font_size
+    )
+
+    # ページの高さを超えないように保護する
+    visual_y = min(
+        visual_y,
+        page_height - margin_top
+    )
+
+    return fitz.Point(
+        visual_x,
+        visual_y
+    )
 
 
 # ============================================================
@@ -184,33 +350,31 @@ def decode_pdf_base64(value):
 # ============================================================
 
 def add_text_to_first_page_top_right(
-    input_pdf: str,
-    output_pdf: str,
-    text: str,
-    font_size: int = FONT_SIZE,
-    margin_right: float = MARGIN_RIGHT,
-    margin_top: float = MARGIN_TOP,
+    input_pdf,
+    output_pdf,
+    text,
+    font_size=FONT_SIZE,
+    margin_right=MARGIN_RIGHT,
+    margin_top=MARGIN_TOP,
 ):
     """
-    PDFの1ページ目だけを編集する。
+    PDFの1ページ目右上に指定文字列を追加する。
 
-    ユーザーから指定された文字列を、
-    PDFを実際に表示したときの
-    「右上」に横書きで追加する。
-
-    90 / 180 / 270度などの
-    ページ回転情報にも対応する。
-
-    2ページ目以降は変更しない。
+    ・2ページ目以降は変更しない
+    ・日本語フォントを使用する
+    ・0度、90度、180度、270度のページ回転に対応する
     """
 
-    # --------------------------------------------------------
-    # 入力チェック
-    # --------------------------------------------------------
+    if not isinstance(text, str):
+        raise ValueError(
+            "追加文字列は文字列で指定してください。"
+        )
+
+    text = text.strip()
 
     if not text:
         raise ValueError(
-            "追加する文言が指定されていません。"
+            "追加する文字列が指定されていません。"
         )
 
     if not os.path.exists(
@@ -221,32 +385,24 @@ def add_text_to_first_page_top_right(
             f"{FONT_PATH}"
         )
 
-    # --------------------------------------------------------
-    # PDFを開く
-    # --------------------------------------------------------
-
-    doc = fitz.open(
+    document = fitz.open(
         input_pdf
     )
 
     try:
-        if doc.page_count == 0:
+        if document.page_count == 0:
             raise ValueError(
                 "PDFにページがありません。"
             )
 
-        # ====================================================
-        # 1ページ目だけ取得
-        # ====================================================
-
-        page = doc[0]
-
-        # ----------------------------------------------------
-        # 日本語フォントを登録
-        # ----------------------------------------------------
+        # 1ページ目だけを対象にする
+        page = document.load_page(
+            0
+        )
 
         font_alias = "JPFont"
 
+        # ページに日本語フォントを登録する
         page.insert_font(
             fontname=font_alias,
             fontfile=FONT_PATH
@@ -257,84 +413,92 @@ def add_text_to_first_page_top_right(
             fontfile=FONT_PATH
         )
 
-        # ----------------------------------------------------
-        # 文字幅を計算
-        # ----------------------------------------------------
-
         text_width = font.text_length(
             text,
             fontsize=font_size
         )
 
-        # ----------------------------------------------------
-        # ページ回転情報
-        # ----------------------------------------------------
-
         rotation = (
             page.rotation % 360
         )
 
-        # ----------------------------------------------------
-        # 見た目上の右上座標
-        # ----------------------------------------------------
-
-        visual_x = (
-            page.rect.width
-            - margin_right
-            - text_width
+        visual_point = calculate_text_position(
+            page=page,
+            text_width=text_width,
+            font_size=font_size,
+            margin_right=margin_right,
+            margin_top=margin_top
         )
 
-        # insert_text() のY座標は文字のベースライン位置
-        visual_y = (
-            margin_top
-            + font_size
-        )
-
-        visual_point = fitz.Point(
-            visual_x,
-            visual_y
-        )
-
-        # ----------------------------------------------------
-        # 見た目座標からPDF内部座標へ変換
-        # ----------------------------------------------------
-
-        pdf_point = (
-            visual_point
-            * page.derotation_matrix
+        print(
+            "PDF DRAW DEBUG:",
+            {
+                "text": repr(text),
+                "font_size": font_size,
+                "text_width": text_width,
+                "page_width": page.rect.width,
+                "page_height": page.rect.height,
+                "page_rotation": rotation,
+                "visual_x": visual_point.x,
+                "visual_y": visual_point.y
+            }
         )
 
         # ----------------------------------------------------
-        # ページ回転を打ち消す
+        # 回転なしPDF
         # ----------------------------------------------------
 
-        text_rotation = (
-            360 - rotation
-        ) % 360
+        if rotation == 0:
+            insert_point = visual_point
+            text_rotation = 0
 
         # ----------------------------------------------------
-        # 文字追加
+        # 回転ありPDF
         # ----------------------------------------------------
 
+        else:
+            # 表示上の座標をPDF内部の座標へ戻す
+            insert_point = (
+                visual_point
+                * page.derotation_matrix
+            )
+
+            # ページ回転を打ち消して表示上は横書きにする
+            text_rotation = (
+                360 - rotation
+            ) % 360
+
+        print(
+            "PDF INSERT DEBUG:",
+            {
+                "insert_x": insert_point.x,
+                "insert_y": insert_point.y,
+                "text_rotation": text_rotation
+            }
+        )
+
+        # 文字を追加する
         page.insert_text(
-            pdf_point,
+            insert_point,
             text,
             fontsize=font_size,
             fontname=font_alias,
+            fontfile=FONT_PATH,
             color=(0, 0, 0),
-            rotate=text_rotation
+            rotate=text_rotation,
+            overlay=True
         )
 
-        # ----------------------------------------------------
-        # 保存
-        # ----------------------------------------------------
-
-        doc.save(
-            output_pdf
+        # garbage=4で未使用オブジェクトを整理する
+        # deflate=Trueで可能な範囲で圧縮する
+        document.save(
+            output_pdf,
+            garbage=4,
+            deflate=True
         )
 
     finally:
-        doc.close()
+        document.close()
 
 
 # ============================================================
@@ -346,20 +510,24 @@ def edit_pdf(request):
     """
     Cloud Run / Functions Framework HTTP Endpoint
 
-    Content-Type:
+    GET:
+        稼働状態確認
+
+    POST Content-Type:
         application/json
 
     Request:
         {
             "fileContent": "Base64形式のPDF",
-            "fileName": "input.pdf",
-            "text": "追加する文字列"
+            "fileName": "sample.pdf",
+            "text": "承認済み"
         }
 
     Response:
         {
+            "success": true,
             "fileContent": "Base64形式の編集済みPDF",
-            "fileName": "edited_input.pdf",
+            "fileName": "edited_sample.pdf",
             "contentType": "application/pdf"
         }
     """
@@ -378,14 +546,18 @@ def edit_pdf(request):
         )
 
     # ========================================================
-    # 動作確認用GET
+    # 稼働確認
     # ========================================================
 
     if request.method == "GET":
         return json_response(
             {
-                "status": "ok",
-                "message": "PDF Editor API is running."
+                "success": True,
+                "status": "running",
+                "message": "PDF Editor API is running.",
+                "fontExists": os.path.exists(
+                    FONT_PATH
+                )
             },
             200
         )
@@ -401,18 +573,18 @@ def edit_pdf(request):
         )
 
     # ========================================================
-    # Content-Typeチェック
+    # Content-Type確認
     # ========================================================
 
     if not request.is_json:
         return error_response(
-            "Content-Type は application/json "
-            "を指定してください。",
+            "Content-Typeにはapplication/jsonを"
+            "指定してください。",
             415
         )
 
     # ========================================================
-    # JSONチェック
+    # JSON取得
     # ========================================================
 
     request_data = request.get_json(
@@ -428,6 +600,13 @@ def edit_pdf(request):
             400
         )
 
+    print(
+        "REQUEST JSON KEYS:",
+        list(
+            request_data.keys()
+        )
+    )
+
     file_content = request_data.get(
         "fileContent"
     )
@@ -441,22 +620,33 @@ def edit_pdf(request):
         "text"
     )
 
+    print(
+        "REQUEST VALUES:",
+        {
+            "fileName": repr(file_name),
+            "text": repr(text),
+            "fileContentExists": bool(file_content),
+            "fileContentLength": (
+                len(file_content)
+                if isinstance(file_content, str)
+                else None
+            )
+        }
+    )
+
     # ========================================================
-    # 必須項目チェック
+    # 必須項目確認
     # ========================================================
 
     if not file_content:
         return error_response(
-            "fileContent が指定されていません。",
+            "fileContentが指定されていません。",
             400
         )
 
-    if not text or not isinstance(
-        text,
-        str
-    ):
+    if not isinstance(text, str):
         return error_response(
-            "text が指定されていません。",
+            "textが指定されていません。",
             400
         )
 
@@ -464,31 +654,17 @@ def edit_pdf(request):
 
     if not text:
         return error_response(
-            "text が空です。",
+            "textが空です。",
             400
         )
 
-    if not isinstance(
-        file_name,
-        str
-    ):
-        file_name = "input.pdf"
-
-    # パス情報を除去
-    file_name = os.path.basename(
-        file_name.strip()
+    file_name = sanitize_pdf_filename(
+        file_name
     )
 
-    if not file_name:
-        file_name = "input.pdf"
-
-    if not file_name.lower().endswith(
-        ".pdf"
-    ):
-        file_name = (
-            file_name
-            + ".pdf"
-        )
+    output_file_name = create_output_filename(
+        file_name
+    )
 
     # ========================================================
     # 一時ファイル
@@ -499,111 +675,106 @@ def edit_pdf(request):
 
     try:
         # ----------------------------------------------------
-        # Base64からPDFへ変換
+        # Base64をPDFバイト列へ変換
         # ----------------------------------------------------
 
-        pdf_bytes = decode_pdf_base64(
+        input_pdf_bytes = decode_pdf_base64(
             file_content
         )
 
-        # ----------------------------------------------------
-        # 入力PDFを書き込む
-        # ----------------------------------------------------
-
-        with tempfile.NamedTemporaryFile(
-            suffix=".pdf",
-            delete=False
-        ) as tmp_input:
-            input_path = tmp_input.name
-
-            tmp_input.write(
-                pdf_bytes
-            )
+        print(
+            "INPUT PDF SIZE:",
+            len(input_pdf_bytes)
+        )
 
         # ----------------------------------------------------
-        # PDFとして開けるか確認
-        # ----------------------------------------------------
-
-        try:
-            test_doc = fitz.open(
-                input_path
-            )
-
-            if test_doc.page_count == 0:
-                test_doc.close()
-
-                return error_response(
-                    "PDFにページがありません。",
-                    400
-                )
-
-            test_doc.close()
-
-        except Exception:
-            return error_response(
-                "fileContentをPDFとして"
-                "読み込めませんでした。",
-                400
-            )
-
-        # ----------------------------------------------------
-        # 出力PDF
+        # 入力PDFの一時ファイル作成
         # ----------------------------------------------------
 
         with tempfile.NamedTemporaryFile(
             suffix=".pdf",
             delete=False
-        ) as tmp_output:
-            output_path = tmp_output.name
+        ) as temporary_input:
+
+            input_path = temporary_input.name
+
+            temporary_input.write(
+                input_pdf_bytes
+            )
+
+        # ----------------------------------------------------
+        # 入力PDF検証
+        # ----------------------------------------------------
+
+        validate_pdf_file(
+            input_path
+        )
+
+        # ----------------------------------------------------
+        # 出力PDFの一時ファイル作成
+        # ----------------------------------------------------
+
+        with tempfile.NamedTemporaryFile(
+            suffix=".pdf",
+            delete=False
+        ) as temporary_output:
+
+            output_path = temporary_output.name
 
         # ====================================================
-        # PDF編集処理
+        # PDF編集
         # ====================================================
 
         add_text_to_first_page_top_right(
             input_pdf=input_path,
             output_pdf=output_path,
-            text=text
+            text=text,
+            font_size=FONT_SIZE,
+            margin_right=MARGIN_RIGHT,
+            margin_top=MARGIN_TOP
         )
 
         # ====================================================
-        # 編集済みPDFを読み込む
+        # 出力PDF読み込み
         # ====================================================
 
         with open(
             output_path,
             "rb"
         ) as output_file:
-            output_pdf_bytes = (
-                output_file.read()
+
+            output_pdf_bytes = output_file.read()
+
+        if not output_pdf_bytes:
+            raise RuntimeError(
+                "編集済みPDFが生成されませんでした。"
             )
 
+        print(
+            "OUTPUT PDF SIZE:",
+            len(output_pdf_bytes)
+        )
+
+        # 開けるPDFになっているか再確認する
+        validate_pdf_file(
+            output_path
+        )
+
         # ====================================================
-        # Base64へ変換
+        # 出力PDFをBase64へ変換
         # ====================================================
 
-        output_base64 = base64.b64encode(
+        output_base64 = encode_pdf_base64(
             output_pdf_bytes
-        ).decode(
-            "ascii"
-        )
-
-        original_name_without_extension = (
-            os.path.splitext(
-                file_name
-            )[0]
-        )
-
-        output_file_name = (
-            f"edited_{original_name_without_extension}.pdf"
         )
 
         # ====================================================
-        # JSONレスポンス
+        # 正常レスポンス
         # ====================================================
 
         return json_response(
             {
+                "success": True,
                 "fileContent": output_base64,
                 "fileName": output_file_name,
                 "contentType": "application/pdf"
@@ -617,7 +788,7 @@ def edit_pdf(request):
 
     except ValueError as error:
         print(
-            "PDF Input Error:",
+            "PDF INPUT ERROR:",
             repr(error)
         )
 
@@ -627,12 +798,27 @@ def edit_pdf(request):
         )
 
     # ========================================================
-    # サーバーエラー
+    # フォントエラー
+    # ========================================================
+
+    except FileNotFoundError as error:
+        print(
+            "FONT ERROR:",
+            repr(error)
+        )
+
+        return error_response(
+            str(error),
+            500
+        )
+
+    # ========================================================
+    # その他のエラー
     # ========================================================
 
     except Exception as error:
         print(
-            "PDF Edit Error:",
+            "PDF EDIT ERROR:",
             repr(error)
         )
 
@@ -659,5 +845,9 @@ def edit_pdf(request):
                     os.remove(
                         path
                     )
-                except Exception:
-                    pass
+
+                except Exception as cleanup_error:
+                    print(
+                        "TEMP FILE CLEANUP ERROR:",
+                        repr(cleanup_error)
+                    )
