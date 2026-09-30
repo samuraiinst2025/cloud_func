@@ -1,9 +1,11 @@
 import os
+import base64
+import binascii
 import tempfile
 
 import fitz  # PyMuPDF
 import functions_framework
-from flask import Response
+from flask import Response, jsonify
 
 
 # ============================================================
@@ -35,8 +37,7 @@ FONT_PATH = os.path.join(
 
 def add_cors_headers(response):
     """
-    Power Apps / Copilot Studio などからの
-    ブラウザ経由アクセスを許可する。
+    Power Apps / Copilot Studioなどからのアクセスを許可する。
 
     PoC中は * で許可。
     本番環境では必要なOriginだけに制限推奨。
@@ -59,7 +60,7 @@ def add_cors_headers(response):
 
     response.headers[
         "Access-Control-Expose-Headers"
-    ] = "Content-Disposition"
+    ] = "Content-Type"
 
     return response
 
@@ -68,19 +69,114 @@ def add_cors_headers(response):
 # 共通レスポンス
 # ============================================================
 
-def text_response(
-    message,
+def json_response(
+    payload,
     status=200
 ):
-    response = Response(
-        message,
-        status=status,
-        mimetype="text/plain"
+    response = jsonify(
+        payload
     )
+
+    response.status_code = status
 
     return add_cors_headers(
         response
     )
+
+
+def error_response(
+    message,
+    status
+):
+    return json_response(
+        {
+            "error": message
+        },
+        status
+    )
+
+
+# ============================================================
+# Base64処理
+# ============================================================
+
+def normalize_base64(value):
+    """
+    通常のBase64とData URL形式の両方を受け付ける。
+
+    通常:
+        JVBERi0xLjQK...
+
+    Data URL:
+        data:application/pdf;base64,JVBERi0xLjQK...
+    """
+
+    if not isinstance(value, str):
+        raise ValueError(
+            "fileContent は文字列で指定してください。"
+        )
+
+    value = value.strip()
+
+    if not value:
+        raise ValueError(
+            "fileContent が空です。"
+        )
+
+    if value.startswith("data:"):
+        if "," not in value:
+            raise ValueError(
+                "fileContent のData URL形式が正しくありません。"
+            )
+
+        value = value.split(
+            ",",
+            1
+        )[1]
+
+    # 改行や空白を除去
+    return "".join(
+        value.split()
+    )
+
+
+def decode_pdf_base64(value):
+    """
+    Base64文字列をPDFバイト列へ変換する。
+    """
+
+    normalized_value = normalize_base64(
+        value
+    )
+
+    try:
+        pdf_bytes = base64.b64decode(
+            normalized_value,
+            validate=True
+        )
+    except (
+        binascii.Error,
+        ValueError
+    ) as error:
+        raise ValueError(
+            "fileContent をBase64として"
+            "デコードできませんでした。"
+        ) from error
+
+    if not pdf_bytes:
+        raise ValueError(
+            "デコード後のPDFデータが空です。"
+        )
+
+    # PDFの一般的なシグネチャを確認
+    if not pdf_bytes.startswith(
+        b"%PDF-"
+    ):
+        raise ValueError(
+            "fileContent はPDFデータではありません。"
+        )
+
+    return pdf_bytes
 
 
 # ============================================================
@@ -117,7 +213,9 @@ def add_text_to_first_page_top_right(
             "追加する文言が指定されていません。"
         )
 
-    if not os.path.exists(FONT_PATH):
+    if not os.path.exists(
+        FONT_PATH
+    ):
         raise FileNotFoundError(
             "日本語フォントが見つかりません: "
             f"{FONT_PATH}"
@@ -132,7 +230,6 @@ def add_text_to_first_page_top_right(
     )
 
     try:
-
         if doc.page_count == 0:
             raise ValueError(
                 "PDFにページがありません。"
@@ -187,8 +284,7 @@ def add_text_to_first_page_top_right(
             - text_width
         )
 
-        # insert_text() のY座標は
-        # 文字のベースライン位置
+        # insert_text() のY座標は文字のベースライン位置
         visual_y = (
             margin_top
             + font_size
@@ -200,7 +296,7 @@ def add_text_to_first_page_top_right(
         )
 
         # ----------------------------------------------------
-        # 見た目座標 → PDF内部座標
+        # 見た目座標からPDF内部座標へ変換
         # ----------------------------------------------------
 
         pdf_point = (
@@ -210,9 +306,6 @@ def add_text_to_first_page_top_right(
 
         # ----------------------------------------------------
         # ページ回転を打ち消す
-        #
-        # PDFを実際に表示したときに
-        # 横書きになるようにする
         # ----------------------------------------------------
 
         text_rotation = (
@@ -234,9 +327,6 @@ def add_text_to_first_page_top_right(
 
         # ----------------------------------------------------
         # 保存
-        #
-        # 高速化のため、
-        # 再圧縮や不要な最適化は行わない
         # ----------------------------------------------------
 
         doc.save(
@@ -244,7 +334,6 @@ def add_text_to_first_page_top_right(
         )
 
     finally:
-
         doc.close()
 
 
@@ -257,18 +346,22 @@ def edit_pdf(request):
     """
     Cloud Run / Functions Framework HTTP Endpoint
 
-    想定URL:
-        POST /edit-pdf
-
     Content-Type:
-        multipart/form-data
+        application/json
 
-    Parameters:
-        file : PDF
-        text : 追加する文字列
+    Request:
+        {
+            "fileContent": "Base64形式のPDF",
+            "fileName": "input.pdf",
+            "text": "追加する文字列"
+        }
 
     Response:
-        application/pdf
+        {
+            "fileContent": "Base64形式の編集済みPDF",
+            "fileName": "edited_input.pdf",
+            "contentType": "application/pdf"
+        }
     """
 
     # ========================================================
@@ -276,7 +369,6 @@ def edit_pdf(request):
     # ========================================================
 
     if request.method == "OPTIONS":
-
         response = Response(
             status=204
         )
@@ -290,9 +382,11 @@ def edit_pdf(request):
     # ========================================================
 
     if request.method == "GET":
-
-        return text_response(
-            "PDF Editor API is running.",
+        return json_response(
+            {
+                "status": "ok",
+                "message": "PDF Editor API is running."
+            },
             200
         )
 
@@ -301,47 +395,99 @@ def edit_pdf(request):
     # ========================================================
 
     if request.method != "POST":
-
-        return text_response(
+        return error_response(
             "POSTメソッドを使用してください。",
             405
         )
 
     # ========================================================
-    # PDFチェック
+    # Content-Typeチェック
     # ========================================================
 
-    if "file" not in request.files:
-
-        return text_response(
-            "PDFファイルが指定されていません。",
-            400
+    if not request.is_json:
+        return error_response(
+            "Content-Type は application/json "
+            "を指定してください。",
+            415
         )
 
-    uploaded_file = (
-        request.files["file"]
+    # ========================================================
+    # JSONチェック
+    # ========================================================
+
+    request_data = request.get_json(
+        silent=True
     )
 
-    if not uploaded_file.filename:
-
-        return text_response(
-            "PDFファイル名が指定されていません。",
+    if not isinstance(
+        request_data,
+        dict
+    ):
+        return error_response(
+            "JSON本文を読み込めませんでした。",
             400
         )
 
-    # ========================================================
-    # textチェック
-    # ========================================================
+    file_content = request_data.get(
+        "fileContent"
+    )
 
-    text = request.form.get(
+    file_name = request_data.get(
+        "fileName",
+        "input.pdf"
+    )
+
+    text = request_data.get(
         "text"
     )
 
-    if not text:
+    # ========================================================
+    # 必須項目チェック
+    # ========================================================
 
-        return text_response(
+    if not file_content:
+        return error_response(
+            "fileContent が指定されていません。",
+            400
+        )
+
+    if not text or not isinstance(
+        text,
+        str
+    ):
+        return error_response(
             "text が指定されていません。",
             400
+        )
+
+    text = text.strip()
+
+    if not text:
+        return error_response(
+            "text が空です。",
+            400
+        )
+
+    if not isinstance(
+        file_name,
+        str
+    ):
+        file_name = "input.pdf"
+
+    # パス情報を除去
+    file_name = os.path.basename(
+        file_name.strip()
+    )
+
+    if not file_name:
+        file_name = "input.pdf"
+
+    if not file_name.lower().endswith(
+        ".pdf"
+    ):
+        file_name = (
+            file_name
+            + ".pdf"
         )
 
     # ========================================================
@@ -352,41 +498,51 @@ def edit_pdf(request):
     output_path = None
 
     try:
+        # ----------------------------------------------------
+        # Base64からPDFへ変換
+        # ----------------------------------------------------
+
+        pdf_bytes = decode_pdf_base64(
+            file_content
+        )
 
         # ----------------------------------------------------
-        # 入力PDF
+        # 入力PDFを書き込む
         # ----------------------------------------------------
 
         with tempfile.NamedTemporaryFile(
             suffix=".pdf",
             delete=False
         ) as tmp_input:
+            input_path = tmp_input.name
 
-            input_path = (
-                tmp_input.name
+            tmp_input.write(
+                pdf_bytes
             )
 
-        uploaded_file.save(
-            input_path
-        )
-
         # ----------------------------------------------------
-        # PDFとして開けるか簡易確認
+        # PDFとして開けるか確認
         # ----------------------------------------------------
 
         try:
-
             test_doc = fitz.open(
                 input_path
             )
 
+            if test_doc.page_count == 0:
+                test_doc.close()
+
+                return error_response(
+                    "PDFにページがありません。",
+                    400
+                )
+
             test_doc.close()
 
         except Exception:
-
-            return text_response(
-                "アップロードされたファイルを"
-                "PDFとして読み込めませんでした。",
+            return error_response(
+                "fileContentをPDFとして"
+                "読み込めませんでした。",
                 400
             )
 
@@ -398,10 +554,7 @@ def edit_pdf(request):
             suffix=".pdf",
             delete=False
         ) as tmp_output:
-
-            output_path = (
-                tmp_output.name
-            )
+            output_path = tmp_output.name
 
         # ====================================================
         # PDF編集処理
@@ -414,51 +567,76 @@ def edit_pdf(request):
         )
 
         # ====================================================
-        # 編集済PDFを読み込む
+        # 編集済みPDFを読み込む
         # ====================================================
 
         with open(
             output_path,
             "rb"
-        ) as file:
-
-            pdf_bytes = (
-                file.read()
+        ) as output_file:
+            output_pdf_bytes = (
+                output_file.read()
             )
 
         # ====================================================
-        # PDFレスポンス
+        # Base64へ変換
         # ====================================================
 
-        response = Response(
-            pdf_bytes,
-            status=200,
-            mimetype="application/pdf"
+        output_base64 = base64.b64encode(
+            output_pdf_bytes
+        ).decode(
+            "ascii"
         )
 
-        response.headers[
-            "Content-Disposition"
-        ] = (
-            'attachment; '
-            'filename="edited.pdf"'
+        original_name_without_extension = (
+            os.path.splitext(
+                file_name
+            )[0]
         )
 
-        return add_cors_headers(
-            response
+        output_file_name = (
+            f"edited_{original_name_without_extension}.pdf"
+        )
+
+        # ====================================================
+        # JSONレスポンス
+        # ====================================================
+
+        return json_response(
+            {
+                "fileContent": output_base64,
+                "fileName": output_file_name,
+                "contentType": "application/pdf"
+            },
+            200
         )
 
     # ========================================================
-    # エラー
+    # 入力エラー
+    # ========================================================
+
+    except ValueError as error:
+        print(
+            "PDF Input Error:",
+            repr(error)
+        )
+
+        return error_response(
+            str(error),
+            400
+        )
+
+    # ========================================================
+    # サーバーエラー
     # ========================================================
 
     except Exception as error:
-
         print(
             "PDF Edit Error:",
             repr(error)
         )
 
-        return text_response(
+        return error_response(
             "PDF編集に失敗しました: "
             f"{str(error)}",
             500
@@ -469,24 +647,17 @@ def edit_pdf(request):
     # ========================================================
 
     finally:
-
         for path in [
             input_path,
             output_path
         ]:
-
             if (
                 path
-                and
-                os.path.exists(path)
+                and os.path.exists(path)
             ):
-
                 try:
-
                     os.remove(
                         path
                     )
-
                 except Exception:
-
                     pass
